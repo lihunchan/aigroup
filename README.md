@@ -13,6 +13,22 @@
 > 软件只是在你的电脑上启动三家官方的命令行工具（Claude Code、Antigravity CLI、Codex），登录在各家官方的页面上完成。
 > 请用你自己的账号，并遵守各家的服务条款。
 
+## 使用前请知道
+
+这个软件做的事情，是在你的电脑上启动三家官方的命令行工具，用的是你自己的登录。
+三家对"由别的软件来启动它们的工具"态度并不一样，连接之前请自己判断：
+
+- **Google（Gemini）——有账号上的风险。** Antigravity 的[官方常见问题](https://antigravity.google/docs/faq)里写着：
+  在个人版方案下，把 Antigravity CLI 包进第三方软件使用"不受支持"（not supported under consumer plans）；
+  同一页还写着，用第三方软件访问 Antigravity 违反它的服务条款，可能导致账号被暂停或终止。
+  不想冒这个风险，就不要连接 Gemini：引导里不勾它即可，另外两位照常能用（记得到"设置与分工"里把"军师"换成另一位）。
+- **Anthropic（Claude）。** Anthropic 的[说明](https://code.claude.com/docs/en/legal-and-compliance)允许使用者用自己的订阅登录未经改动的 Claude Code；
+  对"在自己的产品里运行 Claude Code"的开发者，它要求同意它的商业服务条款，并且不得改动 Claude Code、每位使用者都用自己的账号。
+  这个软件不改动 Claude Code，也不经手任何人的账号；但它是个人项目，没有和 Anthropic 签过任何协议。
+- **OpenAI（GPT）。** Codex 是开源软件，这里用的是它文档里的非交互用法（`codex exec`）。
+
+各家的条款以它们官方页面为准，而且可能会变。
+
 ## 下载和安装
 
 需要一台 Mac，系统是 macOS 13.5 或更高，并且能正常访问 Claude、ChatGPT 和 Google。
@@ -36,7 +52,7 @@
 | 成员 | 默认分工 | 靠哪个工具发言 | 需要的账号 |
 | --- | --- | --- | --- |
 | Claude | 主控 | Anthropic 的 Claude Code | Claude 账号，并订阅了能用 Claude Code 的方案（Pro、Max 等） |
-| Gemini | 军师 | Google 的 Antigravity CLI | Google 账号（免费账号也可以，额度少一些） |
+| Gemini | 军师 | Google 的 Antigravity CLI | Google 账号（免费账号也可以，额度少一些）。连接前先看上面的"使用前请知道" |
 | GPT | 工程师 | OpenAI 的 Codex | ChatGPT 账号，并订阅了能用 Codex 的方案（一般是 Plus 及以上） |
 
 - 勾选要连接的成员，点"依次连接"。一位连好会自动轮到下一位。
