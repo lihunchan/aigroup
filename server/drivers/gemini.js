@@ -44,7 +44,7 @@ async function run(opts) {
   const bin = paths.findAgy();
   if (!bin) {
     throw new DriverError('NOT_INSTALLED',
-      '没有找到 Antigravity CLI（agy 命令）。Gemini 这一路靠它说话，重新装上就能恢复（装法见成员面板里的说明）。');
+      '这台电脑上还没有 Antigravity CLI。点左下角成员里的 Gemini，可以让软件替你装好并登录。');
   }
   if (signal && signal.aborted) throw new DriverError('ABORTED', '已停止');
 
@@ -116,6 +116,7 @@ async function run(opts) {
   try {
     res = await runProcess(bin, args, {
       cwd,
+      env: paths.envFor('gemini'),
       input: JSON.stringify({ event: 'user', message: { content: String(prompt || '') } }) + '\n',
       onLine,
       signal: ac.signal,
@@ -139,7 +140,7 @@ async function run(opts) {
     ].filter(Boolean).join('\n') || `agy 异常退出（代码 ${res.code}）`;
     if (/authentication required|not authenticated|unauthenticated|sign in|signed out|log ?in\b/i.test(raw)) {
       throw new DriverError('NOT_LOGGED_IN',
-        'Antigravity CLI 还没有登录 Google 账号：打开 Antigravity 应用登录一次即可（命令行和应用共用同一份登录）。', raw);
+        'Gemini（Antigravity CLI）还没有登录 Google 账号。点左下角成员里的 Gemini，按提示在浏览器里登录一次。', raw);
     }
     if (/invalid model selection|not recognized as a known model/i.test(raw)) {
       throw new DriverError('FAILED', `设置里给 Gemini 选的型号（${model}）现在用不了。请到"设置与分工"里换一个。`, raw);

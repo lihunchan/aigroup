@@ -2,7 +2,7 @@
 // AI 群聊 —— 本机服务入口。只监听本机地址，不对外网开放。
 //   node server/main.js            启动
 //   node server/main.js --open     启动并自动打开浏览器
-//   node server/main.js --login-claude   给 Claude 做一次性登录
+//   node server/main.js --login-claude   在终端里给 Claude 做一次登录（备用；平时在页面上点成员就能登录）
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -14,8 +14,15 @@ const health = require('./health');
 const flows = require('./flows');
 const M = require('./members');
 const ag = require('./antigravity');
+const setup = require('./setup');
+const tools = require('./tools');
 const { killAll } = require('./proc');
-const { cleanEnv } = require('./drivers/claude');
+
+// 程序装在软件里面时，让服务待在本软件自己的文件夹里运行，而不是软件包里
+// （软件包可能被放在"文稿""下载"这类受系统保护的位置；之后启动的命令行工具默认也待在这里）。
+if (paths.MODE === 'bundled') {
+  try { process.chdir(paths.idleDir()); } catch { /* 换不了就留在原地 */ }
+}
 
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
@@ -27,11 +34,11 @@ const opt = (name, def) => {
 if (flag('--login-claude')) {
   const bin = paths.findClaude();
   if (!bin) {
-    console.error('没有找到 Claude Code。请先安装 Claude 桌面应用。');
+    console.error('这台电脑上还没有 Claude Code。打开「AI 群聊」，点左下角成员里的 Claude，可以让软件替你装好。');
     process.exit(1);
   }
   console.log('即将打开浏览器登录 Claude（用你平时的 Claude 账号）。登录完成后回到这个窗口。\n');
-  const r = spawnSync(bin, ['auth', 'login'], { stdio: 'inherit', env: cleanEnv() });
+  const r = spawnSync(bin, ['auth', 'login'], { stdio: 'inherit', env: paths.envFor('claude') });
   process.exit(r.status == null ? 1 : r.status);
 }
 
@@ -124,6 +131,10 @@ hub.bus.on('event', (ev) => {
     if ((ev.message.kind === 'error') === !!wasOk) health.invalidate();
   }
 });
+setup.bus.on('event', (ev) => {
+  const data = `data: ${JSON.stringify(ev)}\n\n`;
+  for (const res of clients) res.write(data);
+});
 setInterval(() => {
   for (const res of clients) res.write(': keep-alive\n\n');
 }, 20000).unref();
@@ -143,8 +154,12 @@ function sse(req, res) {
 // ---------- 接口 ----------
 
 async function stateView(recheck) {
-  const settings = store.getSettings();
+  let settings = store.getSettings();
   const [h, cat] = await Promise.all([health.check(recheck), ag.catalog(recheck)]);
+  // 第一次打开时三位成员就都叫得动（这台电脑上本来就装好、登录好了）：不需要引导。
+  if (!settings.onboarded && M.AGENTS.every((a) => h[a] && h[a].state === 'ok')) {
+    settings = store.updateSettings({ onboarded: true });
+  }
   return {
     app: 'aigroup',
     agents: M.AGENTS,
@@ -157,6 +172,9 @@ async function stateView(recheck) {
     rooms: hub.roomSummaries(),
     health: h,
     root: paths.ROOT,
+    mode: paths.MODE,       // dev：程序在一个文件夹里 / bundled：装在软件里（发给别人用的方式）
+    sandbox: !!paths.SANDBOX, // 演练模式：页面上要标出来，免得和真实的那一份弄混
+    dataDir: paths.DATA_DIR,
   };
 }
 
@@ -190,6 +208,19 @@ async function handle(req, res) {
       const settings = store.updateSettings(body);
       hub.emit({ type: 'settings', settings });
       return send(res, 200, { settings });
+    }
+
+    // ---- 连接成员：装工具、登录、确认 ----
+    if (p === '/api/setup' && method === 'GET') {
+      return send(res, 200, { members: await setup.status(url.searchParams.get('recheck') === '1') });
+    }
+    if (p === '/api/setup/sizes' && method === 'GET') return send(res, 200, { sizes: await setup.sizes() });
+    const sm = p.match(/^\/api\/setup\/(claude|gemini|gpt)\/(connect|cancel|check-update)$/);
+    if (sm && method === 'POST') {
+      const body = await readBody(req);
+      if (sm[2] === 'connect') return send(res, 200, { job: setup.start(sm[1], { terminal: body.terminal === true, update: body.update === true }) });
+      if (sm[2] === 'cancel') return send(res, 200, { job: setup.cancel(sm[1]) });
+      return send(res, 200, await setup.checkUpdate(sm[1]));
     }
 
     if (p === '/api/rooms' && method === 'POST') {
@@ -311,12 +342,14 @@ async function start() {
   if (APP_READY) console.log(`AI 群聊已启动：${url}`);
   else console.log(`\n  AI 群聊已启动：${url}\n  （保持这个窗口开着；关掉窗口或按 Ctrl+C 即停止）\n`);
   writeReady({ url, pid: process.pid });
+  tools.cleanup(); // 上次没下完的半截文件
   health.check(true).catch(() => {});
   ag.catalog(true).catch(() => {}); // 先问一次 Antigravity 有哪些模型
   if (flag('--open')) openBrowser(url);
 }
 
 function shutdown() {
+  setup.cancelAll();
   hub.stopAll();
   killAll();
   process.exit(0);

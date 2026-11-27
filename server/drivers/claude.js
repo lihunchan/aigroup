@@ -11,18 +11,6 @@ const READ_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
 // （如果把 Edit/Write 也写进预先放行的名单，就等于允许它写电脑上任何位置。）
 const WRITE_TOOLS = [...READ_TOOLS, 'Edit', 'Write'];
 
-// 如果群聊程序是从 Claude 桌面应用里被启动的，环境里会带着那个会话专用的变量；
-// 这里去掉它们，让群里的 Claude 作为一个独立进程用自己的登录状态运行。
-function cleanEnv() {
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT') continue;
-    if (k.startsWith('CLAUDE_CODE_') || k.startsWith('CLAUDE_AGENT_SDK_') || k.startsWith('CLAUDE_PREVIEW_')) continue;
-    env[k] = v;
-  }
-  return env;
-}
-
 function toolDetail(input) {
   const i = input || {};
   const v = i.file_path || i.path || i.pattern || i.query || i.url || i.command || i.description || '';
@@ -42,7 +30,7 @@ async function run(opts) {
   const { prompt, sessionId, model, effort, cwd, canWrite, title, onEvent = () => {}, signal } = opts;
   const bin = paths.findClaude();
   if (!bin) {
-    throw new DriverError('NOT_INSTALLED', '没有找到 Claude Code。Claude 这一路需要安装 Claude 桌面应用（或 Claude Code 命令行）。');
+    throw new DriverError('NOT_INSTALLED', '这台电脑上还没有 Claude Code。点左下角成员里的 Claude，可以让软件替你装好并登录。');
   }
 
   const tools = canWrite ? WRITE_TOOLS : READ_TOOLS;
@@ -117,7 +105,7 @@ async function run(opts) {
   };
 
   const res = await runProcess(bin, args, {
-    cwd, env: cleanEnv(), input: prompt, onLine, signal, timeoutMs: 30 * 60 * 1000,
+    cwd, env: paths.envFor('claude'), input: prompt, onLine, signal, timeoutMs: 30 * 60 * 1000,
   });
   if (res.aborted) throw new DriverError('ABORTED', '已停止');
   if (res.timedOut) throw new DriverError('TIMEOUT', 'Claude 这一轮超过 30 分钟，已中止。');
@@ -131,7 +119,7 @@ async function run(opts) {
     ].filter(Boolean).join('\n') || `Claude Code 异常退出（代码 ${res.code}）`;
     if (/not logged in|\/login|authentication_error|invalid api key|oauth token|credentials/i.test(raw)) {
       throw new DriverError('NOT_LOGGED_IN',
-        'Claude 还没有单独登录。请双击文件夹里的「登录Claude.command」，在浏览器里完成一次登录，之后就不用再登了。', raw);
+        'Claude 还没有登录。点左下角成员里的 Claude，按提示在浏览器里登录一次，之后就不用再登了。', raw);
     }
     if (sessionId && /no conversation found|session.{0,40}(not found|does not exist)|not a valid session/i.test(raw)) {
       throw new DriverError('SESSION_LOST', raw);
@@ -150,4 +138,4 @@ async function run(opts) {
   };
 }
 
-module.exports = { run, cleanEnv };
+module.exports = { run };

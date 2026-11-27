@@ -27,7 +27,8 @@ function killAll() {
 }
 
 function runProcess(cmd, args, opts = {}) {
-  const { cwd, env, input, onLine, signal, timeoutMs } = opts;
+  // onErrLine：错误输出也逐行交出来（有的工具把提示写在那边）；holdStdin：不关标准输入（有的工具一读到"输入结束"就退出）
+  const { cwd, env, input, onLine, onErrLine, holdStdin, signal, timeoutMs } = opts;
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) return reject(new DriverError('ABORTED', '已停止'));
     let child;
@@ -39,6 +40,7 @@ function runProcess(cmd, args, opts = {}) {
     active.add(child);
 
     let buf = '';
+    let errBuf = '';
     let stderr = '';
     let aborted = false;
     let timedOut = false;
@@ -79,14 +81,28 @@ function runProcess(cmd, args, opts = {}) {
       }
     });
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-6000); });
+    child.stderr.on('data', (d) => {
+      stderr = (stderr + d).slice(-6000);
+      if (!onErrLine) return;
+      errBuf += d;
+      let i;
+      while ((i = errBuf.indexOf('\n')) >= 0) {
+        const line = errBuf.slice(0, i);
+        errBuf = errBuf.slice(i + 1);
+        if (line.trim()) try { onErrLine(line); } catch { /* 同上 */ }
+      }
+    });
     child.stdin.on('error', () => {});
     child.on('error', (e) => settle(e));
     child.on('close', (code, sig) => {
       if (buf) feed(buf);
       settle(null, { code, signal: sig, stderr, aborted, timedOut });
     });
-    child.stdin.end(input == null ? '' : input);
+    if (holdStdin) {
+      if (input != null) child.stdin.write(input);
+    } else {
+      child.stdin.end(input == null ? '' : input);
+    }
   });
 }
 

@@ -1,5 +1,5 @@
 'use strict';
-// GPT 成员：通过 ChatGPT 应用自带的 Codex 命令行（codex exec）说话，用的是应用里已登录的账号。
+// GPT 成员：通过 OpenAI 的 Codex 命令行（codex exec）说话，用的是你自己登录的 ChatGPT 账号。
 const paths = require('../paths');
 const { runProcess, DriverError } = require('../proc');
 
@@ -18,7 +18,7 @@ async function run(opts) {
   const { prompt, sessionId, model, effort, cwd, canWrite, onEvent = () => {}, signal } = opts;
   const bin = paths.findCodex();
   if (!bin) {
-    throw new DriverError('NOT_INSTALLED', '没有找到 Codex 命令行。GPT 这一路需要安装并登录 ChatGPT 桌面应用。');
+    throw new DriverError('NOT_INSTALLED', '这台电脑上还没有 Codex。点左下角成员里的 GPT，可以让软件替你装好并登录。');
   }
 
   // --ignore-user-config：不加载个人配置里的插件和 MCP（电脑操控、浏览器等），群成员只需要读写代码的能力。
@@ -94,14 +94,14 @@ async function run(opts) {
     }
   };
 
-  const res = await runProcess(bin, args, { cwd, input: prompt, onLine, signal, timeoutMs: 30 * 60 * 1000 });
+  const res = await runProcess(bin, args, { cwd, env: paths.envFor('gpt'), input: prompt, onLine, signal, timeoutMs: 30 * 60 * 1000 });
   if (res.aborted) throw new DriverError('ABORTED', '已停止');
   if (res.timedOut) throw new DriverError('TIMEOUT', 'GPT 这一轮超过 30 分钟，已中止。');
 
   if (!texts.length || failure) {
     const raw = failure || lastError || (res.stderr || '').trim().split('\n').slice(-6).join('\n') || `Codex 退出码 ${res.code}`;
     if (/not logged in|login required|please log ?in|unauthorized|\b401\b/i.test(raw)) {
-      throw new DriverError('NOT_LOGGED_IN', 'GPT（Codex）还没有登录：请打开 ChatGPT 桌面应用并登录账号。', raw);
+      throw new DriverError('NOT_LOGGED_IN', 'GPT（Codex）还没有登录。点左下角成员里的 GPT，按提示在浏览器里登录一次。', raw);
     }
     if (sessionId && /no rollout found|thread\/resume failed|(session|thread|conversation|rollout).{0,40}(not found|no such|missing|does not exist)|no (saved )?session/i.test(raw)) {
       throw new DriverError('SESSION_LOST', raw);

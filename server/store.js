@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { DATA_DIR, ROOT, CODEX_HOME } = require('./paths');
+const { DATA_DIR, CODEX_HOME, DEFAULT_WORKSPACE } = require('./paths');
 const { AGENTS, ROLE_KEYS } = require('./members');
 const ag = require('./antigravity');
 
@@ -76,7 +76,8 @@ function codexModels() {
 function defaults() {
   return {
     roles: { lead: 'claude', advisor: 'gemini', engineer: 'gpt' },
-    workspace: path.join(ROOT, 'workspace'),
+    workspace: DEFAULT_WORKSPACE,
+    onboarded: false, // 首次启动的"连接成员"引导做过（或跳过）了没有
     members: {
       claude: { enabled: true, model: '', effort: '' },
       gemini: { enabled: true, model: 'gemini-4-neon', effort: 'high' },
@@ -102,6 +103,7 @@ function applySettings(base, patch) {
     if (w === '~' || w.startsWith('~/')) w = path.join(require('os').homedir(), w.slice(1));
     if (path.isAbsolute(w)) out.workspace = path.normalize(w);
   }
+  if (patch.onboarded === true) out.onboarded = true;
   if (patch.members && typeof patch.members === 'object') {
     for (const a of AGENTS) {
       const p = patch.members[a];
@@ -163,6 +165,8 @@ function load() {
   fs.mkdirSync(ROOMS_DIR, { recursive: true });
   const saved = readJson(SETTINGS_FILE);
   settings = applySettings(defaults(), saved);
+  // 这个引导出现之前就在用的人：三位成员早就接好了，不再弹引导。
+  if (saved && saved.onboarded === undefined) settings.onboarded = true;
   // 旧格式的设置在读入时已经换成新格式：顺手写回去，文件和实际用的保持一致。
   if (saved && JSON.stringify(saved) !== JSON.stringify(settings)) writeJson(SETTINGS_FILE, settings);
   rooms.clear();

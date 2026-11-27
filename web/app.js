@@ -14,6 +14,9 @@
     settings: null, info: {}, roles: {}, flows: [], options: {}, health: {}, agents: [], root: '',
     typing: {}, flow: null, flowHidden: null, busy: false, picked: null, mention: null, live: false,
     drafts: {}, // 提问卡片上还没提交的选择，按提问那条消息的编号存
+    setup: {},  // 每位成员的工具和连接情况（装了没有、哪一份、登录了没有、正在进行的连接任务）
+    sizes: {},  // 还没装的工具要下载多大
+    wizard: null, redraw: null, mode: 'dev', dataDir: '',
   };
 
   // ---------- 小工具 ----------
@@ -175,9 +178,10 @@
       avatar(a, true),
       el('div', { class: 'member-main' },
         el('div', { class: 'member-name' }, nameOf(a), el('span', { class: 'tag', text: roleLabel(a) })),
-        el('div', { class: 'member-sub', text: d.state === 'ok' ? '经由 ' + S.info[a].via : d.text })),
+        el('div', { class: 'member-sub', text: jobActive(a) ? '正在连接…' : d.state === 'ok' ? '经由 ' + S.info[a].via : d.text })),
       el('span', { class: 'dot ' + d.cls, title: d.text })));
     });
+    $('btnWizard').hidden = S.agents.every(function (a) { return isConnected(a) || !S.settings.members[a].enabled; });
     renderBanner();
   }
 
@@ -194,7 +198,7 @@
     bar.hidden = false;
     bar.append(el('span', { text: '主控 ' + nameOf(lead) + ' 现在叫不动（' + d.text + '）。不点名的消息和固定流程都要靠主控。' }));
     bar.append(el('button', {
-      class: 'note-btn', type: 'button', text: d.state === 'off' ? '去设置' : '怎么解决',
+      class: 'note-btn', type: 'button', text: d.state === 'off' ? '去设置' : (d.state === 'login' || d.state === 'missing') ? '去连接' : '怎么解决',
       onclick: function () { if (d.state === 'off') showSettings(); else showMember(lead); },
     }));
     // 代任人选：优先找不是军师的那位——主控和军师是同一位的话，"各出一份方案"就只剩一份了。
@@ -304,7 +308,7 @@
     const inner = el('div', { class: 'note-inner' }, line);
     const code = m.meta && m.meta.code;
     if (S.agents.indexOf(m.from) >= 0 && (code === 'NOT_LOGGED_IN' || code === 'NOT_RUNNING' || code === 'NOT_INSTALLED')) {
-      inner.append(el('button', { class: 'note-btn', type: 'button', text: '怎么解决', onclick: function () { showMember(m.from); } }));
+      inner.append(el('button', { class: 'note-btn', type: 'button', text: code === 'NOT_RUNNING' ? '怎么解决' : '去连接', onclick: function () { showMember(m.from); } }));
     }
     return el('div', { class: 'note err', 'data-id': m.id }, inner);
   }
@@ -867,6 +871,11 @@
 
   let modalClose = null;
   function openModal(content, onClose) {
+    if (modalClose) {
+      const prev = modalClose;
+      modalClose = null;
+      prev();
+    }
     const m = $('modal');
     m.textContent = '';
     m.append(content);
@@ -978,6 +987,9 @@
     }));
 
     body.append(el('h4', { text: '其他' }));
+    body.append(el('div', { class: 'field' }, el('span', { class: 'lbl', text: '连接成员' }),
+      el('div', null, el('button', { class: 'btn sm', type: 'button', text: '打开连接向导', onclick: function () { loadSetup().then(showWizard, function (e) { toast(e.message); }); } })),
+      el('div', { class: 'hint', text: '给还没连上的成员装工具、登录账号。' })));
     const ws = el('input', { type: 'text', spellcheck: 'false' });
     ws.value = s.workspace;
     ws.addEventListener('change', function () { s.workspace = ws.value; });
@@ -1001,67 +1013,53 @@
     openModal(body);
   }
 
-  function fixSteps(agent, state) {
-    if (state === 'login' && agent === 'claude') {
-      return {
-        steps: [
-          ['在访达里打开这个文件夹：', el('span', { class: 'kbd', text: S.root })],
-          ['双击里面的「登录Claude.command」。'],
-          ['浏览器会打开 Claude 的登录页，用你平时的账号登录并同意授权。'],
-          ['回到这里，点「重新检测」。'],
-        ],
-        why: '为什么还要登一次：Claude 桌面应用的登录状态不对外共享；群里的 Claude 是一个独立运行的 Claude Code，需要它自己的登录。只需要做一次。',
-      };
-    }
-    if (state === 'login' && agent === 'gemini') {
-      return {
-        steps: [['打开 Antigravity 应用，登录你的 Google 账号。'], ['回到这里，点「重新检测」。']],
-        why: 'Gemini 这一路用的是 Antigravity 的命令行，它和 Antigravity 应用共用同一份登录。',
-      };
-    }
-    if (state === 'error') return { steps: [['稍等一会儿，点「重新检测」。'], ['还是不行的话，打开 Antigravity 应用，看看账号和网络是否正常。']] };
-    if (state === 'login' && agent === 'gpt') return { steps: [['打开 ChatGPT 桌面应用，登录你的账号。'], ['回到这里，点「重新检测」。']] };
-    if (state === 'missing' && agent === 'gemini') {
-      return {
-        steps: [
-          ['打开"终端"（Terminal）应用。'],
-          ['粘贴下面这一行，按回车：', el('span', { class: 'kbd', text: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' })],
-          ['装好以后回到这里，点「重新检测」。'],
-        ],
-        why: 'Gemini 这一路靠 Google 官方的命令行 Antigravity CLI（agy）说话。上面是它的官方安装命令；登录沿用 Antigravity 应用里的 Google 账号。',
-      };
-    }
-    if (state === 'missing') {
-      const app = agent === 'claude' ? 'Claude 桌面应用' : 'ChatGPT 桌面应用';
-      return { steps: [['安装并登录 ' + app + '。'], ['回到这里，点「重新检测」。']] };
-    }
-    return null;
-  }
-
   function showMember(agent) {
     const body = el('div');
+    let upd = null; // 检查更新的结果
     const draw = function () {
       body.textContent = '';
       const d = healthOf(agent);
-      const h = S.health[agent] || {};
+      const t = setupOf(agent);
       const cfg = S.settings.members[agent];
       body.append(el('h3', { text: nameOf(agent) + ' · ' + roleLabel(agent) }),
-        el('p', { class: 'lead', text: S.info[agent].vendor + ' 的模型，经由本机的 ' + S.info[agent].via + ' 发言，用的是你在那个应用里登录的账号。' }));
-      body.append(el('div', { class: 'status-line' }, el('span', { class: 'dot ' + d.cls }), el('b', { text: d.state === 'ok' ? '可以正常发言' : d.text })));
-      if (h.detail && d.state !== 'off') body.append(el('p', { class: 'lead', text: h.detail }));
+        el('p', { class: 'lead', text: S.info[agent].vendor + ' 的模型，经由 ' + S.info[agent].via + ' 发言，用的是你自己登录的账号。' }));
       if (d.state === 'off') body.append(el('p', { class: 'lead', text: '已在设置里停用，不会被叫到。' }));
-      const fix = fixSteps(agent, d.state);
-      if (fix) {
-        body.append(el('h4', { text: '怎么解决' }));
-        const ol = el('ol', { class: 'steps-list' });
-        fix.steps.forEach(function (parts) {
-          const li = el('li');
-          parts.forEach(function (p) { li.append(p); });
-          ol.append(li);
-        });
-        body.append(ol);
-        if (fix.why) body.append(el('p', { class: 'lead', text: fix.why }));
+      body.append(connectBox(agent, true));
+
+      if (t.installed) {
+        const where = t.source === 'own' ? '本软件下载的' : t.source === 'env' ? '手动指定的' : '这台电脑上原有的';
+        const line = el('p', { class: 'lead tool-line' }, t.tool + (t.version ? ' ' + t.version : '') + '（' + where + '）');
+        if (t.source === 'own' && !jobActive(agent)) {
+          if (upd && upd.newer) {
+            line.append(' · 有新版本 ' + upd.latest + (upd.size ? '（约 ' + fmtMB(upd.size) + '）' : '') + ' ',
+              el('button', {
+                class: 'btn sm', type: 'button', text: '更新',
+                onclick: function (e) {
+                  e.currentTarget.disabled = true;
+                  upd = null;
+                  startConnect(agent, { update: true }).catch(function (err) { toast(err.message); });
+                },
+              }));
+          } else if (upd) {
+            line.append(' · 已经是最新的');
+          } else {
+            const btn = el('button', {
+              class: 'link', type: 'button', text: '检查更新',
+              onclick: async function () {
+                btn.disabled = true;
+                btn.textContent = '检查中…';
+                try { upd = await api('POST', '/api/setup/' + agent + '/check-update', {}); } catch (e) { toast(e.message); }
+                draw();
+              },
+            });
+            line.append(' · ', btn);
+          }
+        } else if (t.source === 'system') {
+          line.append(' · 由它自己负责更新');
+        }
+        body.append(el('h4', { text: '工具' }), line);
       }
+
       body.append(el('h4', { text: '当前设置' }),
         el('p', { class: 'lead', text: '模型：' + (cfg.model || '默认') + (cfg.effort ? '　思考强度：' + cfg.effort : '') + '　（可在"设置与分工"里修改）' }));
       const recheck = el('button', {
@@ -1070,6 +1068,7 @@
           recheck.disabled = true;
           recheck.textContent = '检测中…';
           await refreshHealth(true);
+          await loadSetup().catch(function () {});
           draw();
         },
       });
@@ -1077,7 +1076,10 @@
         el('button', { class: 'btn primary', type: 'button', text: '关闭', onclick: closeModal })));
     };
     draw();
-    openModal(body);
+    openModal(body, function () { S.redraw = null; });
+    S.redraw = draw;
+    if (!S.setup[agent]) loadSetup().catch(function () {});
+    if (!isConnected(agent)) loadSizes();
   }
 
   function showRename() {
@@ -1106,7 +1108,7 @@
     if (!S.room) return;
     openModal(el('div', null,
       el('h3', { text: '删除「' + S.room.title + '」？' }),
-      el('p', { class: 'lead', text: '群聊记录会从列表里消失。文件会被移到 data/trash 文件夹，需要时还能找回。' }),
+      el('p', { class: 'lead' }, '群聊记录会从列表里消失。文件会被移到 ', el('span', { class: 'kbd', text: S.dataDir + '/trash' }), '，需要时还能找回。'),
       el('div', { class: 'modal-actions' },
         el('button', { class: 'btn', type: 'button', text: '取消', onclick: closeModal }),
         el('button', {
@@ -1143,6 +1145,302 @@
     } catch (e) { toast(e.message); }
   }
 
+  // ---------- 连接成员（装工具、登录） ----------
+  // 每位成员靠一个官方的命令行工具发言。电脑上没有就由软件从官方下载，再带你在浏览器里登录一次。
+  // 第一次打开软件时会弹出引导，依次连接三位；之后随时可以点左下角的成员补连。
+
+  const jobWaiters = {}; // 成员 → 等他这次连接任务结束的回调
+
+  function setupOf(agent) {
+    return S.setup[agent] || {};
+  }
+  function isConnected(agent) {
+    return (S.health[agent] || {}).state === 'ok';
+  }
+  function jobActive(agent) {
+    const j = setupOf(agent).job;
+    return !!j && !j.endedAt;
+  }
+  function fmtMB(bytes) {
+    return bytes >= 1048576 ? Math.round(bytes / 1048576) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';
+  }
+
+  async function loadSetup(recheck) {
+    const d = await api('GET', '/api/setup' + (recheck ? '?recheck=1' : ''));
+    S.setup = d.members || {};
+    S.agents.forEach(function (a) {
+      if (S.setup[a] && S.setup[a].state) S.health[a] = { state: S.setup[a].state, detail: S.setup[a].detail };
+    });
+    renderMembers();
+    redrawSetup();
+  }
+
+  // 还没装的工具要下载多大（只用来在按钮上写个大概）
+  function loadSizes() {
+    api('GET', '/api/setup/sizes').then(function (d) {
+      S.sizes = d.sizes || {};
+      redrawSetup();
+    }, function () { /* 问不到就不显示大小 */ });
+  }
+
+  function redrawSetup() {
+    if (S.redraw && !$('modal').hidden) S.redraw();
+  }
+
+  function settleJob(agent) {
+    const list = jobWaiters[agent] || [];
+    delete jobWaiters[agent];
+    list.forEach(function (fn) { fn(); });
+  }
+
+  // 等某位成员这次的连接任务结束（实时连接断了也不会一直等：隔几秒自己去问一次）
+  function jobEnded(agent) {
+    if (!jobActive(agent)) return Promise.resolve();
+    return new Promise(function (resolve) {
+      const timer = setInterval(function () {
+        loadSetup().then(function () { if (!jobActive(agent)) settleJob(agent); }, function () {});
+      }, 4000);
+      (jobWaiters[agent] = jobWaiters[agent] || []).push(function () { clearInterval(timer); resolve(); });
+    });
+  }
+
+  function onSetupEvent(ev) {
+    const cur = S.setup[ev.agent] || (S.setup[ev.agent] = {});
+    cur.job = ev.job;
+    if (ev.tool) Object.assign(cur, ev.tool);
+    if (ev.health) {
+      S.health[ev.agent] = ev.health;
+      cur.state = ev.health.state;
+      cur.detail = ev.health.detail;
+    }
+    renderMembers();
+    redrawSetup();
+    if (ev.job && ev.job.endedAt) {
+      settleJob(ev.agent);
+      if (ev.job.phase === 'ok') refreshHealth(false); // 模型清单等也跟着更新
+    }
+  }
+
+  async function startConnect(agent, opts) {
+    const d = await api('POST', '/api/setup/' + agent + '/connect', opts || {});
+    (S.setup[agent] || (S.setup[agent] = {})).job = d.job;
+    renderMembers();
+    redrawSetup();
+  }
+
+  async function cancelConnect(agent) {
+    try { await api('POST', '/api/setup/' + agent + '/cancel', {}); } catch (e) { toast(e.message); }
+  }
+
+  // 登录页没弹出来、或者不小心关掉了：把这次登录停掉，重新来一次（会再打开一次登录页）
+  async function reopenLogin(agent) {
+    const w = S.wizard;
+    if (w && w.running && w.current === agent) w.again = agent; // 引导正在依次连接：这一位重来，不往下跳
+    await cancelConnect(agent);
+    await jobEnded(agent);
+    if (w && w.running && w.current === agent) return; // 由引导接着重新发起
+    try { await startConnect(agent, {}); } catch (e) { toast(e.message); }
+  }
+
+  function phaseText(agent, job) {
+    const t = setupOf(agent);
+    const site = (t.account && t.account.site) || nameOf(agent);
+    switch (job.phase) {
+      case 'query': return '正在向 ' + t.vendor + ' 查询 ' + t.tool + ' 的最新版本…';
+      case 'download':
+        return '正在从 ' + t.vendor + ' 官方下载 ' + t.tool + (job.version ? ' ' + job.version : '') +
+          (job.total ? ' · ' + fmtMB(job.done) + ' / ' + fmtMB(job.total) : '') + '…';
+      case 'verify': return '下载完成，正在核对是不是 ' + t.vendor + ' 的官方原版…';
+      case 'login':
+        return job.terminal
+          ? '已经打开了一个"终端"窗口，请按里面的提示登录。登录完成后这里会自动继续。'
+          : '已经在浏览器里打开了 ' + site + ' 的登录页：请在那里登录并同意授权。完成后这里会自动继续，不用回来点什么。';
+      default: return '正在确认登录状态…';
+    }
+  }
+
+  // 一位成员的"连接情况 + 能做的操作"。primary：没连上时是否直接给出"登录 / 下载并登录"按钮（引导里由底部的总按钮统一发起）。
+  function connectBox(agent, primary) {
+    const t = setupOf(agent);
+    const job = t.job;
+    const box = el('div', { class: 'connect' });
+    const actions = el('div', { class: 'connect-actions' });
+    const go = function (opts) {
+      return function (e) {
+        e.currentTarget.disabled = true;
+        startConnect(agent, opts).catch(function (err) { toast(err.message); redrawSetup(); });
+      };
+    };
+
+    if (jobActive(agent)) {
+      box.classList.add('busy');
+      box.append(el('div', { class: 'connect-text' }, el('span', { class: 'dots' }, el('i'), el('i'), el('i')), phaseText(agent, job)));
+      if (job.phase === 'download' && job.total) {
+        const pct = Math.max(2, Math.min(100, Math.round(job.done / job.total * 100)));
+        box.append(el('div', { class: 'bar', role: 'progressbar', 'aria-valuenow': String(pct), 'aria-valuemin': '0', 'aria-valuemax': '100' },
+          el('i', { style: 'width:' + pct + '%' })));
+      }
+      if (job.phase === 'login' && !job.terminal) {
+        actions.append(el('button', {
+          class: 'btn sm', type: 'button', text: '重新打开登录页',
+          onclick: function (e) { e.currentTarget.disabled = true; reopenLogin(agent); },
+        }));
+      }
+      const inQueue = S.wizard && S.wizard.running && S.wizard.current === agent;
+      actions.append(el('button', {
+        class: 'link', type: 'button', text: inQueue ? '跳过这一位' : '取消',
+        onclick: function (e) { e.currentTarget.disabled = true; cancelConnect(agent); },
+      }));
+      box.append(actions);
+      return box;
+    }
+
+    const state = (S.health[agent] || {}).state || t.state || '';
+    if (state === 'ok') {
+      box.classList.add('ok');
+      box.append(el('div', { class: 'connect-text' }, el('b', { text: '✓ 已连接' }),
+        t.detail && t.detail !== '已登录' ? el('span', { class: 'connect-sub', text: ' · ' + t.detail }) : null));
+      return box;
+    }
+
+    // 上一次没连上：说清楚原因，给出再试的办法
+    if (job && job.phase === 'failed') {
+      box.append(el('div', { class: 'connect-text err', text: job.error || '没有连上。' }));
+      actions.append(el('button', { class: 'btn sm', type: 'button', text: '再试一次', onclick: go({}) }));
+      if (job.hint === 'terminal') {
+        actions.append(el('button', {
+          class: 'link', type: 'button', text: '改用"终端"窗口登录', title: '打开系统自带的"终端"，直接面对这个工具自己的登录界面',
+          onclick: go({ terminal: true }),
+        }));
+      }
+      box.append(actions);
+      return box;
+    }
+
+    if (state === 'missing') {
+      const size = S.sizes[agent] && S.sizes[agent].size ? '（约 ' + fmtMB(S.sizes[agent].size) + '）' : '';
+      box.append(el('div', { class: 'connect-text' }, '这台电脑上还没有 ' + t.tool + '。', el('span', { class: 'connect-sub', text: '连接时会先从 ' + t.vendor + ' 官方下载' + size + '，再登录。' })));
+      if (primary) actions.append(el('button', { class: 'btn sm primary', type: 'button', text: '下载并登录', onclick: go({}) }));
+    } else if (state === 'login') {
+      box.append(el('div', { class: 'connect-text' }, (t.detail || '还没有登录') + '。', el('span', { class: 'connect-sub', text: t.tool + ' 已经在这台电脑上了，登录一次就行。' })));
+      if (primary) actions.append(el('button', { class: 'btn sm primary', type: 'button', text: '登录', onclick: go({}) }));
+    } else if (state === 'error') {
+      box.append(el('div', { class: 'connect-text err', text: t.detail || '现在连不上。' }));
+      if (primary) actions.append(el('button', { class: 'btn sm', type: 'button', text: '再试一次', onclick: go({}) }));
+    } else {
+      box.append(el('div', { class: 'connect-text' }, el('span', { class: 'connect-sub', text: '检测中…' })));
+    }
+    if (actions.childNodes.length) box.append(actions);
+    return box;
+  }
+
+  // ---- 首次启动的引导 ----
+
+  async function runQueue() {
+    const w = S.wizard;
+    if (!w || w.running) return;
+    w.running = true;
+    w.finished = false;
+    for (let i = 0; i < S.agents.length; i++) {
+      const a = S.agents[i];
+      if (S.wizard !== w || !w.running) break;       // 引导被关掉，或者点了"全部停下"
+      if (!w.picks[a] || isConnected(a)) continue;
+      w.current = a;
+      redrawSetup();
+      try {
+        await startConnect(a, {});
+      } catch (e) {
+        toast(e.message);
+        continue;
+      }
+      await jobEnded(a);
+      if (w.again === a) {                           // 点了"重新打开登录页"：这一位重来
+        w.again = null;
+        i--;
+      }
+    }
+    w.current = null;
+    if (w.running) w.finished = true;
+    w.running = false;
+    redrawSetup();
+  }
+
+  function closeWizard() {
+    const w = S.wizard;
+    S.wizard = null;
+    if (w) w.running = false; // 正在连的那一位会继续连完；排在后面的不再自动开始
+    if (!S.settings.onboarded) {
+      api('POST', '/api/settings', { onboarded: true }).then(function (res) { S.settings = res.settings; }, function () {});
+    }
+  }
+
+  function showWizard() {
+    const w = S.wizard = { picks: {}, current: null, running: false, finished: false, again: null };
+    S.agents.forEach(function (a) { w.picks[a] = !isConnected(a); });
+    const body = el('div', { class: 'wizard' });
+
+    const draw = function () {
+      body.textContent = '';
+      const first = !S.settings.onboarded;
+      body.append(el('h3', { text: first ? '欢迎使用 AI 群聊' : '连接成员' }),
+        el('p', { class: 'lead', text: '群里的三位成员各自通过一个官方的命令行工具发言，用的是你自己的账号。下面依次把他们接进来：电脑上没有的工具会先从官方下载，然后在浏览器里登录一次，之后就不用再登了。' }));
+
+      const list = el('div', { class: 'setup-list' });
+      S.agents.forEach(function (a) {
+        const t = setupOf(a);
+        const connected = isConnected(a);
+        let mark;
+        if (connected) {
+          mark = el('span', { class: 'setup-tick', text: '✓', 'aria-label': '已连接' });
+        } else {
+          mark = el('input', { type: 'checkbox', 'aria-label': '连接 ' + nameOf(a), disabled: w.running });
+          mark.checked = !!w.picks[a];
+          mark.addEventListener('change', function () { w.picks[a] = mark.checked; draw(); });
+        }
+        list.append(el('div', { class: 'setup-row' + (w.current === a ? ' current' : '') + (connected ? ' done' : '') },
+          el('div', { class: 'setup-mark' }, mark),
+          avatar(a, true),
+          el('div', { class: 'setup-main' },
+            el('div', { class: 'setup-name' }, nameOf(a), el('span', { class: 'setup-via', text: (t.vendor || S.info[a].vendor) + ' · 经由 ' + S.info[a].via })),
+            !connected && t.account ? el('div', { class: 'setup-need', text: t.account.need }) : null,
+            connectBox(a, false))));
+      });
+      body.append(list);
+
+      const todo = S.agents.filter(function (a) { return w.picks[a] && !isConnected(a); });
+      const left = S.agents.filter(function (a) { return !isConnected(a); });
+      const foot = el('div', { class: 'modal-actions' });
+      if (w.running) {
+        foot.append(el('span', { class: 'setup-tip', text: '一位连好之后会自动开始下一位。' }),
+          el('button', {
+            class: 'btn', type: 'button', text: '全部停下',
+            onclick: function () { const cur = w.current; w.running = false; if (cur) cancelConnect(cur); draw(); },
+          }));
+      } else if (!left.length) {
+        foot.append(el('span', { class: 'setup-tip', text: '三位都接进来了。' }),
+          el('button', { class: 'btn primary', type: 'button', text: first ? '开始使用' : '完成', onclick: closeModal }));
+      } else if (w.finished && !todo.length) {
+        foot.append(el('button', { class: 'btn primary', type: 'button', text: first ? '开始使用' : '完成', onclick: closeModal }));
+      } else {
+        foot.append(el('button', { class: 'btn', type: 'button', text: w.finished ? (first ? '先这样，开始使用' : '先这样') : (first ? '先不连接，直接进去' : '关闭'), onclick: closeModal }),
+          el('button', {
+            class: 'btn primary', type: 'button', disabled: !todo.length,
+            text: todo.length > 1 ? '依次连接选中的 ' + todo.length + ' 位' : todo.length === 1 ? '连接 ' + nameOf(todo[0]) : '先勾选要连接的成员',
+            onclick: function () { runQueue(); },
+          }));
+      }
+      body.append(foot);
+      if (left.length) {
+        body.append(el('p', { class: 'setup-foot', text: '没连的成员叫不动，但不影响其他人发言。之后随时点左下角的成员，就能把他补连上。登录用的是各家官方的登录页，本软件不经手你的账号和密码。' }));
+      }
+    };
+
+    S.redraw = draw;
+    draw();
+    openModal(body, function () { S.redraw = null; closeWizard(); });
+    loadSizes();
+  }
+
   // ---------- 数据 ----------
 
   function applySettings(settings) {
@@ -1168,6 +1466,13 @@
     S.rooms = d.rooms;
     S.health = d.health || {};
     S.root = d.root;
+    S.mode = d.mode || 'dev';
+    S.dataDir = d.dataDir || 'data';
+    if (d.sandbox) {
+      // 演练模式：在左上角标出来，免得和平时用的那一份弄混
+      document.body.classList.add('sandbox');
+      document.querySelector('.brand-sub').textContent = '演练模式 · 不影响真实的登录和聊天';
+    }
     renderRooms();
     renderMembers();
     renderChips();
@@ -1270,6 +1575,9 @@
       case 'settings':
         applySettings(ev.settings);
         break;
+      case 'setup':
+        onSetupEvent(ev);
+        break;
       default:
         break;
     }
@@ -1337,6 +1645,7 @@
     });
     $('btnNewRoom').addEventListener('click', newRoom);
     $('btnSettings').addEventListener('click', showSettings);
+    $('btnWizard').addEventListener('click', function () { loadSetup().then(showWizard, function (e) { toast(e.message); }); });
     $('roomTitle').addEventListener('click', showRename);
     $('btnDeleteRoom').addEventListener('click', showDelete);
     $('btnJump').addEventListener('click', scrollBottom);
@@ -1394,6 +1703,8 @@
     await openRoom(id);
     focusInput();
     connect();
+    // 第一次打开（还有成员没接进来）：弹出连接引导
+    loadSetup().then(function () { if (!S.settings.onboarded) showWizard(); }, function () {});
     setInterval(function () { if (Object.keys(S.typing).length) renderTyping(); }, 1000);
     setInterval(function () { refreshHealth(false); }, 60000);
   }

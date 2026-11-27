@@ -18,3 +18,8 @@
 # Claude 应用留在这台电脑上的本地设置和临时副本。
 /.claude/settings.local.json
 /.claude/worktrees/
+
+# 发给别人的安装包（由 app/build-dist.sh 生成，随时可以重新打包），以及打包用的官方 Node.js
+# （由 app/fetch-node.sh 取回来，一百多 MB，不属于这个工具本身）。
+/dist/
+/app/vendor/

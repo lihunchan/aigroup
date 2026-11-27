@@ -82,7 +82,7 @@ async function fetchCli() {
   try {
     const bin = paths.findAgy();
     if (!bin) throw new Error('没有找到 Antigravity CLI（agy 命令）');
-    const res = await runProcess(bin, ['models'], { timeoutMs: 25000, onLine: (l) => { out += l + '\n'; } });
+    const res = await runProcess(bin, ['models'], { env: paths.envFor('gemini'), cwd: paths.idleDir(), timeoutMs: 25000, onLine: (l) => { out += l + '\n'; } });
     const n = normalizeCli(out);
     if (res.code !== 0 || !n.models.length) {
       throw new Error((res.stderr || '').trim().split('\n').slice(-3).join(' ') || `agy models 退出码 ${res.code}`);

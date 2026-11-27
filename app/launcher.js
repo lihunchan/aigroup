@@ -1,10 +1,14 @@
 // AI 群聊 —— Mac 软件外壳。
 //
 // 用 macOS 自带的 JavaScript for Automation 写成，打包只用到系统自带的工具，不需要安装开发环境。
-// 它只做三件事：找到程序文件夹 → 启动里面的本机服务 → 开一个窗口显示群聊页面。
-// 程序本体（server/、web/）和聊天记录（data/）仍然在程序文件夹里，所以平时改程序不用重新打包这个外壳。
+// 它只做三件事：找到程序 → 启动里面的本机服务 → 开一个窗口显示群聊页面。
 //
-// 打包：bash app/build.sh
+// 有两种打包方式，用的是同一份外壳：
+//   · 自用（bash app/build.sh）：外壳是一个小程序，程序本体（server/、web/）和聊天记录（data/）仍然在程序文件夹里，
+//     所以平时改程序不用重新打包；
+//   · 发给别人（bash app/build-dist.sh）：程序本体和运行环境都装在软件里面，聊天记录放在
+//     ~/Library/Application Support/aigroup。这种方式下外壳由系统自带的 osascript 运行（见 app/stub.sh），
+//     不带任何需要编译的程序，所以不挑系统版本。
 ObjC.import('Cocoa');
 ObjC.import('WebKit');
 
@@ -13,14 +17,21 @@ var UTF8 = 4;
 var CMD = 1 << 20, SHIFT = 1 << 17, OPT = 1 << 19;
 
 var fm = $.NSFileManager.defaultManager;
-var bundle = $.NSBundle.mainBundle;
-var prefs = $.NSUserDefaults.standardUserDefaults;
+// 由 osascript 运行时，软件包在哪由启动脚本通过环境变量告诉我们；这时偏好设置也要指明存在本软件名下。
+var HOSTED_AT = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey('AIGROUP_BUNDLE')) || '';
+var HOSTED = !!HOSTED_AT;
+var bundle = HOSTED ? $.NSBundle.bundleWithPath(HOSTED_AT) : $.NSBundle.mainBundle;
+var prefs = HOSTED
+  ? $.NSUserDefaults.alloc.initWithSuiteName(ObjC.unwrap(bundle.bundleIdentifier) || 'local.aigroup.app')
+  : $.NSUserDefaults.standardUserDefaults;
 var USER_HOME = ObjC.unwrap($.NSHomeDirectory());
+// 程序本体是不是装在软件里面（发给别人的那种方式）
+var BUNDLED = ObjC.unwrap(bundle.objectForInfoDictionaryKey('AIGroupMode')) === 'bundled';
 // 菜单、以及提示里引用的系统用语（"文稿 / Documents"、"允许 / Allow"）跟着系统语言走：
 // 系统自己加进菜单的项目、系统弹出的授权框用的都是系统语言，这样两边对得上。群聊页面本身始终是中文。
 var ZH = /^zh/i.test(ObjC.unwrap($.NSLocale.preferredLanguages.firstObject) || '');
 function T(zh, en) { return ZH ? zh : en; }
-var LOG_DIR = USER_HOME + '/Library/Logs/aigroup';
+var LOG_DIR = USER_HOME + '/Library/Logs/' + (BUNDLED ? 'aigroup-app' : 'aigroup');
 var APP_LOG = LOG_DIR + '/app.log';
 var SERVER_LOG = LOG_DIR + '/server.log';
 
@@ -117,8 +128,9 @@ function remembered() {
   return [str(prefs.stringForKey('home')), info('AIGroupHome')].filter(Boolean);
 }
 
-// 依次看：软件所在的文件夹（软件跟着程序文件夹走时）→ 你上次手动选的 → 打包时记下的位置。
+// 程序装在软件里面时，就在软件包里；否则依次看：软件所在的文件夹（软件跟着程序文件夹走时）→ 你上次手动选的 → 打包时记下的位置。
 function findHome() {
+  if (BUNDLED) return str(bundle.resourcePath) + '/app';
   var list = [str(bundle.bundlePath.stringByDeletingLastPathComponent)].concat(remembered());
   var i;
   for (i = 0; i < list.length; i++) {
@@ -190,7 +202,7 @@ function show(html) {
 
 function showLoading() {
   // 还没确定程序文件夹时（刚打开的那一下），按可能的位置来写提示，不去碰磁盘
-  var where = protectedFolder(S.home) || remembered().map(protectedFolder).filter(Boolean)[0] || '';
+  var where = BUNDLED ? '' : (protectedFolder(S.home) || remembered().map(protectedFolder).filter(Boolean)[0] || '');
   var hint = where
     ? '系统如果问是否允许「' + NAME + '」访问 ' + where + ' 文件夹，请点"' + T('允许', 'Allow') + '"——程序和聊天记录就放在那里。'
     : '还在启动，请再等一下…';
@@ -252,8 +264,24 @@ function startServer() {
   env.setObjectForKey($(S.home), 'AIGROUP_HOME');
   env.setObjectForKey($(S.ready), 'AIGROUP_READY');
   env.setObjectForKey($(info('AIGroupPort')), 'AIGROUP_PORT');
+  // 这两个只是给外壳自己用的：不传下去，免得后面启动的命令行工具被当成本软件
+  env.removeObjectForKey('CFProcessPath');
+  env.removeObjectForKey('AIGROUP_BUNDLE');
+  if (BUNDLED) {
+    env.setObjectForKey($('bundled'), 'AIGROUP_MODE');
+    env.setObjectForKey($(str(bundle.resourcePath)), 'AIGROUP_RES');
+  }
 
-  var script = [
+  // 程序装在软件里面时：运行环境（Node.js）也在软件里，按这台电脑的处理器选对应的那一份
+  var script = BUNDLED ? [
+    'cd "$AIGROUP_HOME" || exit 21',
+    'case "$(uname -m)" in arm64) A=arm64 ;; *) A=x64 ;; esac',
+    'NODE="$AIGROUP_RES/node/$A/bin/node"',
+    'if [ ! -x "$NODE" ]; then echo "安装包里没有适合这台电脑（$(uname -m)）的运行环境"; exit 24; fi',
+    'echo "用 $NODE 启动：$AIGROUP_HOME"',
+    'if [ -n "$AIGROUP_PORT" ]; then exec "$NODE" server/main.js --app "$AIGROUP_READY" --port "$AIGROUP_PORT"; fi',
+    'exec "$NODE" server/main.js --app "$AIGROUP_READY"',
+  ].join('\n') : [
     'cd "$AIGROUP_HOME" || exit 21',
     '. ./server/find-node.sh || exit 22',
     'NODE="$(find_node)"',
@@ -285,7 +313,15 @@ function serverFailed(wasRunning) {
   S.task = null;
   S.pipe = null;
   var where = protectedFolder(S.home);
-  if (/operation not permitted|EPERM/i.test(tail)) {
+  if (BUNDLED && code === 24) {
+    showError('这个安装包不支持这台电脑', [
+      '安装包里没有适合这台电脑处理器的运行环境。请向给你这个软件的人要一份支持你这台电脑的版本。',
+    ], [['retry', '重试'], ['logs', '打开日志文件夹']], tail);
+  } else if (BUNDLED && (code === 21 || code === 22)) {
+    showError('软件不完整', [
+      '软件包里的程序文件找不到了。请重新安装一次（把安装包里的「' + NAME + '」再拖进"应用程序"）。',
+    ], [['retry', '重试'], ['logs', '打开日志文件夹']], tail);
+  } else if (/operation not permitted|EPERM/i.test(tail)) {
     showError(where ? '需要你允许访问 ' + where + ' 文件夹' : '需要你允许访问程序所在的文件夹', [
       '「' + NAME + '」的程序和聊天记录放在 <code>' + esc(S.home) + '</code>，没有这个权限就读不到。',
       '打开 ' + T('系统设置 → 隐私与安全性 → 文件与文件夹', 'System Settings → Privacy &amp; Security → Files and Folders') +
@@ -391,6 +427,11 @@ function showWindow() {
   S.win.makeKeyAndOrderFront(null);
 }
 
+// 由 osascript 运行时，自己记住窗口的大小和位置（见 makeWindow）
+function saveFrame() {
+  if (HOSTED && S.win) prefs.setObjectForKey(S.win.stringWithSavedFrame, 'frame');
+}
+
 function setZoom(z) {
   z = Math.min(2.5, Math.max(0.6, Math.round(z * 100) / 100));
   S.wv.setPageZoom(z);
@@ -405,9 +446,17 @@ function makeWindow() {
   win.setTitle(NAME);
   win.setMinSize($.NSMakeSize(420, 480));
   win.center;
-  win.setFrameAutosaveName('AIGroupMain'); // 记住上次的窗口大小和位置
+  if (HOSTED) {
+    // 由 osascript 运行时，系统自带的"记住窗口位置"会记到 osascript 名下：改成自己记在本软件的偏好设置里
+    var saved = str(prefs.stringForKey('frame'));
+    if (saved) win.setFrameFromString(saved);
+  } else {
+    win.setFrameAutosaveName('AIGroupMain'); // 记住上次的窗口大小和位置
+  }
 
   var conf = $.WKWebViewConfiguration.alloc.init;
+  // 同样的原因：网页数据不写到磁盘上（页面本来也不需要存东西），免得在 osascript 名下留下缓存
+  if (HOSTED) conf.setWebsiteDataStore($.WKWebsiteDataStore.nonPersistentDataStore);
   conf.userContentController.addScriptMessageHandlerName(S.helper, 'aigroup');
   var wv = $.WKWebView.alloc.initWithFrameConfiguration(rect, conf);
   wv.setAutoresizingMask(18); // 跟着窗口变宽变高
@@ -490,7 +539,7 @@ ObjC.registerSubclass({
     'windowShouldClose:': {
       types: ['bool', ['id']],
       implementation: function () {
-        safely('收起窗口', function () { S.win.orderOut(null); });
+        safely('收起窗口', function () { saveFrame(); S.win.orderOut(null); });
         return false;
       },
     },
@@ -549,6 +598,23 @@ ObjC.registerSubclass({
     'menuShow:': {
       types: ['void', ['id']],
       implementation: function () { safely('显示主窗口', showWindow); },
+    },
+    // 下面三个只在由 osascript 运行时用到（那时没有小程序外壳替我们接这些事件）
+    'applicationShouldHandleReopen:hasVisibleWindows:': {
+      types: ['bool', ['id', 'bool']],
+      implementation: function () { reopen(); return true; },
+    },
+    'applicationShouldTerminateAfterLastWindowClosed:': {
+      types: ['bool', ['id']],
+      implementation: function () { return false; },
+    },
+    'applicationWillTerminate:': {
+      types: ['void', ['id']],
+      implementation: function () { safely('记住窗口位置', saveFrame); quit(); },
+    },
+    'windowDidEndLiveResize:': {
+      types: ['void', ['id']],
+      implementation: function () { safely('记住窗口位置', saveFrame); },
     },
   },
 });
@@ -662,6 +728,14 @@ function run() {
   safely('启动', function () {
     S.debug = info('AIGroupDebug') === '1';
     S.helper = $.AIGHelper.alloc.init;
+    if (HOSTED) {
+      // 由 osascript 运行：自己把"应用"搭起来（普通的带程序坞图标的应用），事件交给上面那个对象
+      $.NSApplication.sharedApplication;
+      $.NSApp.setActivationPolicy(0);
+      $.NSApp.setDelegate(S.helper);
+      var icon = $.NSImage.alloc.initWithContentsOfFile(str(bundle.resourcePath) + '/AppIcon.icns');
+      if (!nil(icon)) $.NSApp.setApplicationIconImage(icon);
+    }
     makeWindow();
     safely('菜单', buildMenu);
     showLoading();
@@ -669,6 +743,7 @@ function run() {
     $.NSApp.activateIgnoringOtherApps(true);
     S.timer = $.NSTimer.scheduledTimerWithTimeIntervalTargetSelectorUserInfoRepeats(0.3, S.helper, 'tick:', null, true);
   });
+  if (HOSTED) $.NSApp.run; // 由 osascript 运行时，这里一直运行到软件退出
 }
 
 // 点程序坞图标 / 再次双击软件
